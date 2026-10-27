@@ -9,6 +9,10 @@
 const SITE = "https://www.redtube.com";
 /** The site pages a long way, but nobody scrolls past this: it bounds "Ver más". */
 const MAX_PAGE = 40;
+/** No new row is started after this long: Home keeps the rows that arrived instead of timing out whole (Kino allows 20 s). */
+const ROW_DEADLINE_MS = 8000;
+/** Rows asked at once: the site answers a burst of pages with errors, two at a time it does not. */
+const ROW_CONCURRENCY = 2;
 
 // ---- 1. texts ----------------------------------------------------------------------------------------------------
 
@@ -114,6 +118,12 @@ const CATEGORY_ES = {
 /** The categories Home and the section's first category tab lean on, in this order (the site's own names). */
 const FEATURED = ["HD", "Amateur", "MILF", "Latina", "Asian", "Teens", "Lesbian", "Big Tits", "Anal", "Blonde", "Ebony", "Mature"];
 
+/** The categories on Home: fixed, so Home never waits for the Categories page before it can ask for any row. */
+const HOME_CATEGORIES = [
+  ["HD", "hd"], ["Amateur", "amateur"], ["MILF", "milf"], ["Latina", "latina"], ["Asian", "asian"], ["Lesbian", "lesbian"],
+  ["Big Tits", "bigtits"], ["Anal", "anal"], ["Blonde", "blonde"], ["Ebony", "ebony"], ["Mature", "mature"],
+];
+
 function categoryName(name) {
   return lang() === "es" ? CATEGORY_ES[name] || name : name;
 }
@@ -129,7 +139,7 @@ function failFetch(e) {
 async function getHtml(pathAndQuery, timeoutMs) {
   let r;
   try {
-    r = await kino.fetch(SITE + "/" + pathAndQuery.replace(/^\//, ""), { timeoutMs: timeoutMs || 15000, headers: { Accept: "text/html" } });
+    r = await kino.fetch(SITE + "/" + pathAndQuery.replace(/^\//, ""), { timeoutMs: timeoutMs || 10000, headers: { Accept: "text/html" } });
   } catch (e) {
     failFetch(e);
   }
@@ -203,6 +213,30 @@ function minutesOf(duration) {
   return seconds > 0 ? Math.max(1, Math.round(seconds / 60)) : undefined;
 }
 
+/**
+ * The site's thumbnails refuse a request that carries no RedTube Referer, and Kino draws a plain URL without one: so a
+ * card's poster is a reference and Kino asks [image] for the bytes. The address the page gave is kept for a while
+ * (it expires in about two hours) under the video's id, which is all the reference holds.
+ */
+function posterRef(id) {
+  return { source: "plugin", handle: "t:" + id };
+}
+
+function rememberPoster(id, url) {
+  const ttlMs = 2 * 60 * 60 * 1000;
+  try {
+    kino.storage.set("p" + id, url, { ttlMs });
+  } catch (e) {
+    // Storage full: start the memory over with this one rather than lose every later poster.
+    for (const k of kino.storage.keys()) if (k.startsWith("p")) kino.storage.remove(k);
+    try {
+      kino.storage.set("p" + id, url, { ttlMs });
+    } catch (e2) {
+      // No room at all: the poster is fetched from the video's page when asked.
+    }
+  }
+}
+
 /** The video cards of a list page, as Kino items. */
 function parseCards(html) {
   const items = [];
@@ -221,13 +255,14 @@ function parseCards(html) {
     const stats = [...body.matchAll(/class='info-views'>\s*([^<]*)</g)].map((x) => decode(x[1]));
     const views = stats[0] || "";
     const pct = Number((/^(\d{1,3})%$/.exec(stats[1] || "") || [])[1]);
+    if (poster) rememberPoster(id, poster);
     const item = {
       id: "rt" + id,
       ref: "v:" + id,
       title: title.slice(0, 200),
       kind: "movie",
       adult: true,
-      poster,
+      poster: poster ? posterRef(id) : undefined,
       runtimeMinutes: minutesOf(duration),
       overview: views && views !== "0" ? t("views", { n: views }) : undefined,
     };
@@ -323,12 +358,34 @@ function periodLabel(period) {
 async function rowFor(id, title, ref) {
   try {
     const page = await listPage(parseListRef(ref), null);
-    if (!page.items.length) return null;
+    if (!page.items.length) {
+      kino.log("row " + id + " empty");
+      return null;
+    }
     return { id, title, ref, items: page.items.slice(0, 40) };
   } catch (e) {
-    kino.log("row " + id + " failed: " + (e && e.code ? e.code : "error"));
+    kino.log("row " + id + " failed: " + (e && (e.message || e.code) ? e.message || e.code : "error"));
     return null;
   }
+}
+
+/** Runs the row jobs [thunks] a couple at a time, in order, and keeps what came back before [ROW_DEADLINE_MS]. */
+async function runRows(thunks) {
+  const started = Date.now();
+  const out = new Array(thunks.length).fill(null);
+  let next = 0;
+  async function worker() {
+    while (next < thunks.length && Date.now() - started < ROW_DEADLINE_MS) {
+      const i = next++;
+      out[i] = await thunks[i]();
+    }
+  }
+  const workers = [];
+  for (let n = 0; n < ROW_CONCURRENCY; n++) workers.push(worker());
+  await Promise.all(workers);
+  const left = thunks.length - next;
+  if (left > 0) kino.log(left + " rows not started: out of time");
+  return out.filter(Boolean);
 }
 
 async function featuredCategories() {
@@ -344,20 +401,14 @@ function categoryRow(c, prefix) {
 export async function home() {
   const rowCount = Math.min(10, Math.max(1, Number(kino.config.get("homeRows")) || 6));
   const jobs = [
-    rowFor("new", t("new"), listRef("newest")),
-    rowFor("hot", t("trending"), listRef("hot")),
-    rowFor("viewed", t("viewedPeriod") + " " + periodLabel("weekly"), listRef("mostviewed", { period: "weekly" })),
+    () => rowFor("new", t("new"), listRef("newest")),
+    () => rowFor("hot", t("trending"), listRef("hot")),
+    () => rowFor("viewed", t("viewedPeriod") + " " + periodLabel("weekly"), listRef("mostviewed", { period: "weekly" })),
   ];
-  if (rowCount > 3) {
-    let cats = [];
-    try {
-      cats = await featuredCategories();
-    } catch (e) {
-      kino.log("categories failed: " + (e && e.code ? e.code : "error"));
-    }
-    for (const c of cats.slice(0, rowCount - 3)) jobs.push(categoryRow(c));
+  for (const [name, slug] of HOME_CATEGORIES.slice(0, Math.max(0, rowCount - 3))) {
+    jobs.push(() => rowFor("cat-" + slug, categoryName(name), listRef("redtube/" + slug)));
   }
-  const rows = (await Promise.all(jobs)).filter(Boolean).slice(0, rowCount);
+  const rows = (await runRows(jobs)).slice(0, rowCount);
   if (!rows.length) throw kino.error("unavailable", "no rows", { userMessage: t("network") });
   return rows;
 }
@@ -374,22 +425,22 @@ export async function section(arg) {
   const hero = { title: t("heroTitle"), text: t("heroText") };
   const jobs = [];
   if (tab === "new") {
-    jobs.push(rowFor("s-new", t("new"), listRef("newest")));
-    jobs.push(rowFor("s-hot", t("trending"), listRef("hot")));
+    jobs.push(() => rowFor("s-new", t("new"), listRef("newest")));
+    jobs.push(() => rowFor("s-hot", t("trending"), listRef("hot")));
   } else if (tab === "popular") {
     for (const p of ["weekly", "monthly", "alltime"]) {
-      jobs.push(rowFor("s-pop-" + p, t("viewedPeriod") + " " + periodLabel(p), listRef("mostviewed", { period: p })));
+      jobs.push(() => rowFor("s-pop-" + p, t("viewedPeriod") + " " + periodLabel(p), listRef("mostviewed", { period: p })));
     }
-    jobs.push(rowFor("s-top", t("topRated"), listRef("top", { period: settingPeriod() })));
+    jobs.push(() => rowFor("s-top", t("topRated"), listRef("top", { period: settingPeriod() })));
   } else if (tab === "stars") {
-    for (const s of (await loadStars()).slice(0, 12)) jobs.push(rowFor("s-star-" + s.slug.replace(/[^A-Za-z0-9._~-]/g, "-"), s.name, listRef("pornstar/" + s.slug)));
+    for (const s of (await loadStars()).slice(0, 12)) jobs.push(() => rowFor("s-star-" + s.slug.replace(/[^A-Za-z0-9._~-]/g, "-"), s.name, listRef("pornstar/" + s.slug)));
   } else {
     const all = await loadCategories();
     const featured = new Set(FEATURED);
     const pool = tab === "cats" ? FEATURED.map((n) => all.find((c) => c.name === n)).filter(Boolean) : all.filter((c) => !featured.has(c.name));
-    for (const c of pool.slice(0, 12)) jobs.push(categoryRow(c, "s-"));
+    for (const c of pool.slice(0, 12)) jobs.push(() => categoryRow(c, "s-"));
   }
-  const rows = (await Promise.all(jobs)).filter(Boolean);
+  const rows = await runRows(jobs);
   return { tabs, tab, hero, rows };
 }
 
@@ -453,9 +504,36 @@ export async function details(ref) {
   if (lines.length) out.overview = lines.join("\n");
   const seconds = Number((/"video_duration":"?(\d+)/.exec(html) || [])[1]);
   if (seconds > 0) out.runtimeMinutes = Math.max(1, Math.round(seconds / 60));
-  const image = httpUrl((/<meta property="og:image" content="([^"]+)"/.exec(html) || [])[1]);
-  if (image) out.backdrop = image;
+  if (/<meta property="og:image"/.test(html)) out.backdrop = posterRef(id);
   return out;
+}
+
+/** The biggest picture Kino takes from a plugin once decoded (256 KB), minus a margin. */
+const MAX_IMAGE_BYTES = 250000;
+
+/** The picture for `t:<id>`: the thumbnail address kept from the list, else the one on the video's own page. */
+export async function image(arg) {
+  const m = /^t:(\d{1,12})$/.exec(String((arg && arg.handle) || ""));
+  if (!m) throw kino.error("not_found", "unknown image handle");
+  const id = m[1];
+  const attempt = async (url) => {
+    const r = await kino.fetch(url, { timeoutMs: 8000, headers: { Referer: SITE + "/" } });
+    if (!r.ok) return null;
+    const mime = String(r.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+    if (mime !== "image/jpeg" && mime !== "image/png" && mime !== "image/webp") return null;
+    const bytes = r.base64();
+    return bytes.length * 0.75 <= MAX_IMAGE_BYTES ? { bytes, mime } : null;
+  };
+  const kept = kino.storage.get("p" + id);
+  if (kept) {
+    const got = await attempt(kept).catch(() => null);
+    if (got) return got;
+  }
+  const html = await loadVideoPage(id);
+  const fresh = html && httpUrl((/<meta property="og:image" content="([^"]+)"/.exec(html) || [])[1]);
+  const got = fresh ? await attempt(fresh).catch(() => null) : null;
+  if (!got) throw kino.error("not_found", "no thumbnail");
+  return got;
 }
 
 // ---- 7. playing --------------------------------------------------------------------------------------------------

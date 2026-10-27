@@ -30,6 +30,11 @@ If the video page gives no playable address, the plugin opens it in Kino's hidde
 the video requests the page makes, like a visitor's browser. When the site asks for a human check, Kino never tries to
 solve it: the person reads that and can try later.
 
+The site's thumbnails refuse a request without a RedTube `Referer`, and Kino draws plain URLs without one, so posters are
+**image references** (`imageSource`, apiVersion 13, Kino 0.9.74): Kino asks the plugin's `image` export for each picture that
+comes on screen. That is why the plugin needs Kino 0.9.74 or later. Home loads its rows two at a time because the site
+answers a burst of pages with errors.
+
 The plugin does not touch anything else: no login, no cookies of its own, no account data.
 
 ## Develop
