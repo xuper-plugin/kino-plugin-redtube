@@ -1,0 +1,62 @@
+{
+  "id": "redtube",
+  "name": "RedTube",
+  "version": "1.0.0",
+  "apiVersion": 9,
+  "entry": "plugin.js",
+  "description": "+18. Videos para adultos de RedTube: novedades, más vistos, mejor valorados, categorías, búsqueda y reproducción.",
+  "author": "xuper-plugin",
+  "homepage": "https://github.com/xuper-plugin/kino-plugin-redtube",
+  "hosts": ["www.redtube.com", "redtube.com", "*.rdtcdn.com", "*.phncdn.com"],
+  "capabilities": ["search", "home", "browse", "resolve", "download"],
+  "browser": true,
+  "streamHosts": "any",
+  "categories": ["adult"],
+  "color": "#B3261E",
+  "icon": "icon.png",
+  "section": { "label": "RedTube", "labelEn": "RedTube" },
+  "settings": [
+    {
+      "key": "quality",
+      "type": "select",
+      "label": "Calidad preferida",
+      "labelEn": "Preferred quality",
+      "default": "720",
+      "options": [
+        { "value": "auto", "label": "La mejor disponible", "labelEn": "Best available" },
+        { "value": "1080", "label": "1080p", "labelEn": "1080p" },
+        { "value": "720", "label": "720p", "labelEn": "720p" },
+        { "value": "480", "label": "480p", "labelEn": "480p" },
+        { "value": "240", "label": "240p", "labelEn": "240p" }
+      ],
+      "hint": "720p carga bien en casi todos los aparatos.",
+      "hintEn": "720p plays well on almost every device."
+    },
+    {
+      "key": "period",
+      "type": "select",
+      "label": "Periodo de los más vistos y valorados",
+      "labelEn": "Period for most viewed and top rated",
+      "default": "monthly",
+      "options": [
+        { "value": "weekly", "label": "Semana", "labelEn": "Week" },
+        { "value": "monthly", "label": "Mes", "labelEn": "Month" },
+        { "value": "alltime", "label": "Siempre", "labelEn": "All time" }
+      ]
+    },
+    {
+      "key": "homeRows",
+      "type": "select",
+      "label": "Filas en Inicio",
+      "labelEn": "Rows on Home",
+      "default": "6",
+      "options": [
+        { "value": "3", "label": "3", "labelEn": "3" },
+        { "value": "6", "label": "6", "labelEn": "6" },
+        { "value": "10", "label": "10", "labelEn": "10" }
+      ],
+      "hint": "Menos filas cargan más rápido.",
+      "hintEn": "Fewer rows load faster."
+    }
+  ]
+}
