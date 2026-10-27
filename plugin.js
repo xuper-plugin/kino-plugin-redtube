@@ -355,14 +355,18 @@ function periodLabel(period) {
 }
 
 /** A row for a list, or null when it came back empty or failed (one slow list never costs the others). */
-async function rowFor(id, title, ref) {
+async function rowFor(id, title, ref, genre) {
   try {
     const page = await listPage(parseListRef(ref), null);
     if (!page.items.length) {
       kino.log("row " + id + " empty");
       return null;
     }
-    return { id, title, ref, items: page.items.slice(0, 40) };
+    // Kino's Home regroups every plugin's rows by genre: a row that names its own gets its own shelf there, the rest
+    // share the one for movies. A category row names its category (any text is allowed, Home titles the shelf with it).
+    const row = { id, title, ref, items: page.items.slice(0, 40) };
+    if (genre) row.genre = genre;
+    return row;
   } catch (e) {
     kino.log("row " + id + " failed: " + (e && (e.message || e.code) ? e.message || e.code : "error"));
     return null;
@@ -395,7 +399,7 @@ async function featuredCategories() {
 }
 
 function categoryRow(c, prefix) {
-  return rowFor((prefix || "") + "cat-" + c.slug, categoryName(c.name), listRef("redtube/" + c.slug));
+  return rowFor((prefix || "") + "cat-" + c.slug, categoryName(c.name), listRef("redtube/" + c.slug), categoryName(c.name));
 }
 
 export async function home() {
@@ -406,7 +410,7 @@ export async function home() {
     () => rowFor("viewed", t("viewedPeriod") + " " + periodLabel("weekly"), listRef("mostviewed", { period: "weekly" })),
   ];
   for (const [name, slug] of HOME_CATEGORIES.slice(0, Math.max(0, rowCount - 3))) {
-    jobs.push(() => rowFor("cat-" + slug, categoryName(name), listRef("redtube/" + slug)));
+    jobs.push(() => rowFor("cat-" + slug, categoryName(name), listRef("redtube/" + slug), categoryName(name)));
   }
   const rows = (await runRows(jobs)).slice(0, rowCount);
   if (!rows.length) throw kino.error("unavailable", "no rows", { userMessage: t("network") });
